@@ -27,6 +27,9 @@ const DEFAULT_SYSTEM_PROMPT = [
 
 const STEP_LIMIT_REPLY = "Sorry, that took too many steps. Could you say that again?";
 const EMPTY_REPLY = "Sorry, I don't have an answer for that.";
+const DONE_REPLY = "Done.";
+/** Sent once when the model ends a turn silently after calling tools, which Converse allows. */
+const REPLY_NUDGE = "Now reply to the user in one short sentence about what was done.";
 
 /** The part of a BedrockRuntimeClient this brain uses; pass a fake in tests. */
 export interface BedrockClientLike {
@@ -162,6 +165,7 @@ export function createBedrockBrain(options: BedrockBrainOptions): Brain {
 
       const trace: ToolCallTrace[] = [];
       let steps = 0;
+      let nudged = false;
       for (;;) {
         const outOfSteps = steps >= maxSteps;
         const response = await converse({
@@ -175,10 +179,18 @@ export function createBedrockBrain(options: BedrockBrainOptions): Brain {
         const content = response.output?.message?.content ?? [];
         const toolUses = content.filter((block) => block.toolUse).map((block) => block.toolUse!);
 
+        if (toolUses.length === 0 && !textOf(content) && trace.length > 0 && !outOfSteps && !nudged) {
+          // Some models end the turn without a word after a tool call. Ask once
+          // for the reply; the empty message isn't kept, as Converse rejects it.
+          nudged = true;
+          addUserContent([{ text: REPLY_NUDGE }]);
+          continue;
+        }
         if (toolUses.length === 0 || outOfSteps) {
           // Out of steps, any further tool calls are dropped: keeping them
           // without results would leave the history invalid for next turn.
-          const reply = textOf(content) || (outOfSteps ? STEP_LIMIT_REPLY : EMPTY_REPLY);
+          const silent = trace.length > 0 && trace.every((call) => !call.isError) ? DONE_REPLY : EMPTY_REPLY;
+          const reply = textOf(content) || (outOfSteps ? STEP_LIMIT_REPLY : silent);
           history.push({ role: "assistant", content: outOfSteps || !textOf(content) ? [{ text: reply }] : content });
           return { reply, trace, awaitingConfirmation: gate.awaiting };
         }

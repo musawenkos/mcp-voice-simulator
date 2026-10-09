@@ -259,6 +259,37 @@ describe("createBedrockBrain", () => {
       await brainWith(session, client).turn("how many?");
       expect((requests[1].messages.at(-1)!.content[0].toolResult as any).content).toEqual([{ json: { count: 3 } }]);
     });
+
+    it("asks once for a reply when the model goes silent after a tool call", async () => {
+      const { session } = fakeSession([readTool("save_note")]);
+      const { client, requests } = fakeBedrock([[use("1", "save_note")], [], text("Saved your note.")]);
+      const result = await brainWith(session, client).turn("save it");
+
+      expect(result.reply).toBe("Saved your note.");
+      const last = requests[2].messages;
+      expect(last.at(-1)!.content.at(-1)).toEqual({ text: "Now reply to the user in one short sentence about what was done." });
+      expectValidHistory(last);
+    });
+
+    it("says Done when the model stays silent after tools that succeeded, and apologises only after an error", async () => {
+      const { session } = fakeSession([readTool("save_note")]);
+      const { client, requests } = fakeBedrock([[use("1", "save_note")], [], [], text("Next.")]);
+      const brain = brainWith(session, client);
+      expect((await brain.turn("save it")).reply).toBe("Done.");
+      await brain.turn("and then?");
+      expectValidHistory(requests[3].messages);
+
+      const failing = fakeSession([readTool("save_note")], () => ({ content: [{ type: "text", text: "nope" }], isError: true }));
+      const silent = fakeBedrock([[use("1", "save_note")], [], []]);
+      expect((await brainWith(failing.session, silent.client).turn("save it")).reply).toBe("Sorry, I don't have an answer for that.");
+    });
+
+    it("doesn't nudge when no tool ran", async () => {
+      const { session } = fakeSession([]);
+      const { client, requests } = fakeBedrock([[]]);
+      expect((await brainWith(session, client).turn("hm")).reply).toBe("Sorry, I don't have an answer for that.");
+      expect(requests).toHaveLength(1);
+    });
   });
 
   describe("confirming mutating calls", () => {
