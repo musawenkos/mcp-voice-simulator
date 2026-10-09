@@ -13,6 +13,8 @@ export interface McpTool {
   title?: string;
   inputSchema?: unknown;
   outputSchema?: unknown;
+  /** Behaviour hints from the server, e.g. `readOnlyHint` for tools that change nothing. */
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean; [key: string]: unknown };
   /** Where MCP Apps declares a tool's view (`_meta.ui.resourceUri`) and who may call it. */
   _meta?: Record<string, unknown>;
 }

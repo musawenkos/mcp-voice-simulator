@@ -8,7 +8,8 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { Brain, BrainTurnResult } from "./types.js";
+import { withTurnContext } from "./context.js";
+import type { Brain, BrainTurnContext, BrainTurnResult } from "./types.js";
 import type { ToolCallTrace } from "../mcp.js";
 
 const DEFAULT_SYSTEM_PROMPT = [
@@ -71,9 +72,10 @@ export function createCursorBrain(options: CursorBrainOptions): Brain {
       agent = null;
       await current?.[Symbol.asyncDispose]?.().catch(() => {});
     },
-    async turn(utterance: string): Promise<BrainTurnResult> {
+    async turn(utterance: string, context?: BrainTurnContext): Promise<BrainTurnResult> {
       const currentAgent = await ensureAgent();
-      const prompt = needsPersona ? `${systemPrompt}\n\nUser: ${utterance}` : utterance;
+      const said = withTurnContext(utterance, context);
+      const prompt = needsPersona ? `${systemPrompt}\n\nUser: ${said}` : said;
       needsPersona = false;
 
       const started = Date.now();

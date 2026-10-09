@@ -39,7 +39,8 @@
   },
   "peerDependencies": {
     "@anthropic-ai/sdk": "^0.127.0",
-    "@cursor/sdk": "^1.0.31"
+    "@cursor/sdk": "^1.0.31",
+    "@aws-sdk/client-bedrock-runtime": "^3.1000.0"
   },
   "peerDependenciesMeta": {
     "@anthropic-ai/sdk": {
@@ -47,10 +48,14 @@
     },
     "@cursor/sdk": {
       "optional": true
+    },
+    "@aws-sdk/client-bedrock-runtime": {
+      "optional": true
     }
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.127.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.1147.0",
     "@cursor/sdk": "^1.0.31",
     "@modelcontextprotocol/ext-apps": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
@@ -71,6 +76,7 @@
     "voice-assistant",
     "simulator",
     "oauth",
-    "pkce"
+    "pkce",
+    "amazon-bedrock"
   ]
 }

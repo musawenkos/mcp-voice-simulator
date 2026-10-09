@@ -29,7 +29,7 @@ integration would:
 3. **Per utterance** — pick a tool, call it, and speak the result back, via a
    pluggable **brain**.
 
-Two brains ship ready to use, needing no per-server tuning because they pick
+Three brains ship ready to use, needing no per-server tuning because they pick
 tools from whatever `tools/list` returns:
 
 - **`createClaudeBrain`** — an Anthropic Messages API tool-use loop
@@ -37,6 +37,10 @@ tools from whatever `tools/list` returns:
 - **`createCursorBrain`** — a Cursor agent restricted to your server's MCP
   tools, so Cursor itself is the MCP client
   (needs `CURSOR_API_KEY` and the peer dependency `@cursor/sdk`)
+- **`createBedrockBrain`** — an Amazon Bedrock Converse API tool-use loop, so
+  any Bedrock model with tool use can drive it
+  (needs AWS credentials and the peer dependency `@aws-sdk/client-bedrock-runtime`,
+  see [Amazon Bedrock](#amazon-bedrock))
 
 There's no built-in "no API key" brain — picking a tool from open-ended
 natural language needs an LLM unless you write one for your own specific
@@ -89,9 +93,79 @@ bearer token and want to skip account linking entirely, set
 | `SIM_LINK_TIMEOUT_MS` | how long to wait for you to finish logging in, in milliseconds (default `300000`, 5 minutes). Servers that make you connect several providers on first use can need every minute of it |
 | `SIM_UI`, `SIM_SANDBOX_PORT` | MCP Apps views, see [On-screen views](#on-screen-views-mcp-apps) |
 | `SIM_TTS` and `ELEVENLABS_*` | optional server-side voice, see [Voice](#voice-text-to-speech) |
-| `SIM_BRAIN` | force `claude` or `cursor` (default: cursor if `CURSOR_API_KEY` is set, else claude) |
+| `SIM_BRAIN` | force `claude`, `cursor` or `bedrock` (default: cursor if `CURSOR_API_KEY` is set, else claude; Bedrock is never picked on its own) |
 | `ANTHROPIC_API_KEY`, `SIM_MODEL` | for the Claude brain (`SIM_MODEL` default `claude-sonnet-5`) |
 | `CURSOR_API_KEY`, `SIM_CURSOR_MODEL` | for the Cursor brain (`SIM_CURSOR_MODEL` default `composer-2.5`) |
+| `AWS_REGION`, `AWS_PROFILE`, `SIM_BEDROCK_MODEL` | for the Bedrock brain, see [Amazon Bedrock](#amazon-bedrock) |
+
+## Amazon Bedrock
+
+`SIM_BRAIN=bedrock` drives the simulator with a model on Amazon Bedrock through
+the [Converse API](https://docs.aws.amazon.com/bedrock/latest/userguide/conversation-inference.html),
+which has one tool-use shape for every model that supports tools, so switching
+models is a config change.
+
+```bash
+npm install @aws-sdk/client-bedrock-runtime
+
+SIM_BRAIN=bedrock AWS_PROFILE=my-bedrock-profile AWS_REGION=us-east-1 MCP_URL=https://your-server.example.com/mcp mcp-voice-simulator
+```
+
+Credentials come from the AWS SDK's standard chain (`AWS_PROFILE`, SSO,
+environment variables, an instance role), never from the simulator's own
+config. The identity needs `bedrock:InvokeModel` on the model (and on the
+inference profile, if you use one), and the model must be enabled for your
+account in the Bedrock console.
+
+| Env var | Purpose |
+| --- | --- |
+| `SIM_BRAIN` | `bedrock` |
+| `AWS_REGION` | the Bedrock region, e.g. `us-east-1` (or set one in the profile's config) |
+| `AWS_PROFILE` | optional; a named profile from `~/.aws/config` |
+| `SIM_BEDROCK_MODEL` | model or inference profile id (default `us.anthropic.claude-sonnet-4-5-20250929-v1:0`) |
+
+A model being *listed* for your account doesn't mean you can call it: some
+return `AccessDeniedException` until access is granted. Try a one-off call (for
+example `aws bedrock-runtime converse --model-id <id> --messages
+'[{"role":"user","content":[{"text":"hi"}]}]'`) before switching.
+
+How it maps MCP onto Converse:
+
+- Each `tools/list` entry becomes a `toolSpec`, its `inputSchema` passed as-is
+  as `inputSchema.json`. Bedrock tool names must match `[a-zA-Z0-9_-]{1,64}`, so
+  other characters become `_` (and are mapped back for `tools/call`); a missing
+  description falls back to the title or name.
+- The loop runs model → `toolUse` → `tools/call` → `toolResult` → model until the
+  model answers. `isError` results and JSON-RPC errors go back to the model as
+  `status: "error"` so it can say so or correct itself; a dropped connection is
+  thrown, so the server relinks.
+- At most `maxSteps` tool calls per turn (default 8); after the last one the
+  model is told to answer with what it has.
+- The trace has each call's full result, so [MCP Apps views](#on-screen-views-mcp-apps) work.
+- **Mutating tools need a user turn in between.** Tools not annotated
+  `readOnlyHint: true` go through a confirmation gate: the model's first call is
+  held (not sent to the server) and the model is told to ask the user; only the
+  identical call on the user's next turn runs. For tools with a `confirm` or
+  `dryRun` parameter, the preview call counts as the read-back, so "yes" runs the
+  confirming call without asking twice. A held call also shows the **Confirm** /
+  **Cancel** buttons. Your server should still enforce its own rules; this stops
+  the model from acting on its own in one step, not a determined user.
+
+```ts
+import { McpSessionManager, createServer, createBedrockBrain } from "mcp-voice-simulator";
+
+const sessionManager = new McpSessionManager({ mcpUrl, bearerToken: process.env.MCP_BEARER_TOKEN });
+const brain = createBedrockBrain({
+  session: () => sessionManager.ensureSession(),
+  region: "us-east-1",
+  model: "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+  systemPrompt: "You are ...",
+  maxSteps: 8,
+  // Optional: exempt a tool from confirmation, or require it for a read-only one.
+  classifyToolCall: (tool) => (tool?.name === "attach_photo" ? "run" : undefined),
+});
+createServer({ sessionManager, brain });
+```
 
 ## On-screen views (MCP Apps)
 
@@ -176,10 +250,26 @@ const brain = createClaudeBrain({
 createServer({ sessionManager, brain, port: 8790 });
 ```
 
-Write your own brain by implementing the `Brain` interface (`turn(utterance)`
-→ `{ reply, trace }`, optional `reset()`) — see
+Write your own brain by implementing the `Brain` interface (`turn(utterance, context?)`
+→ `{ reply, trace, awaitingConfirmation? }`, optional `reset()`) — see
 `examples/scripted-brain.ts` for a complete keyword-routed example needing
 no LLM at all.
+
+### Turn context
+
+Some requests depend on what the device knows rather than what the user said:
+"log a pothole **here**" needs a location, "attach **this** photo" needs the
+id of the upload. Pass such facts as turn context, either from the host app
+for every turn:
+
+```ts
+createServer({ sessionManager, brain, turnContext: () => ({ location: lastKnownLocation }) });
+```
+
+or from the page with a single utterance, as `POST /api/turn {"utterance": "...",
+"context": {...}}` (a JSON object of at most 4 KB; its keys override the
+host's). The built-in brains give it to the model ahead of the utterance,
+labelled as coming from the app rather than from the user.
 
 The discovery and linking pieces are exported individually too
 (`discoverProtectedResource`, `discoverAuthorizationServer`,
@@ -231,7 +321,8 @@ src/session.ts        Owns account linking (the pending login, its expiry, retri
 src/link.ts            OAuth 2.1 + PKCE loopback flow (RFC 8252-style)
 src/discovery.ts        RFC 9728 / RFC 8414 / RFC 7591 discovery
 src/mcp.ts             Thin @modelcontextprotocol/client wrapper
-src/brains/            Pluggable utterance -> tool-call(s) -> reply strategies
+src/brains/            Pluggable utterance -> tool-call(s) -> reply strategies,
+                       plus the confirmation gate for mutating tools (confirm.ts)
 src/conformance.ts     Checks a server against Alexa+'s *documented* requirements
 examples/              A no-API-key scripted brain, as a pattern to copy
 docs/ALEXA_AI_CONTRACT.md   Exact source + confidence behind every conformance check

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createBedrockBrain } from "./brains/bedrock.js";
 import { createClaudeBrain } from "./brains/claude.js";
 import { createCursorBrain } from "./brains/cursor.js";
 import type { Brain } from "./brains/types.js";
@@ -48,18 +49,26 @@ const sessionManager = new McpSessionManager({
   ui: uiEnabled,
 });
 
-function pickBrainName(): "claude" | "cursor" {
-  if (forcedBrain === "claude" || forcedBrain === "cursor") return forcedBrain;
+function pickBrainName(): "claude" | "cursor" | "bedrock" {
+  if (forcedBrain === "claude" || forcedBrain === "cursor" || forcedBrain === "bedrock") return forcedBrain;
+  if (forcedBrain) fail(`SIM_BRAIN must be "claude", "cursor" or "bedrock" (got "${forcedBrain}").`);
   if (cursorKey) return "cursor";
   if (anthropicKey) return "claude";
   fail(
-    "No brain available — set CURSOR_API_KEY or ANTHROPIC_API_KEY (there's no built-in key-free brain, " +
+    "No brain available — set CURSOR_API_KEY or ANTHROPIC_API_KEY, or SIM_BRAIN=bedrock with AWS credentials " +
+      "(there's no built-in key-free brain, " +
       "since picking tools from natural language needs an LLM unless you write your own for your specific " +
       "tools — see examples/ and use the programmatic API instead of this CLI to supply one).",
   );
 }
 
 const brainName = pickBrainName();
+// The AWS SDK finds credentials itself (AWS_PROFILE, SSO, env vars...) but
+// fails late and vaguely without a region, so check for one up front.
+const awsRegion = env("AWS_REGION") ?? env("AWS_DEFAULT_REGION");
+if (brainName === "bedrock" && !awsRegion && !env("AWS_PROFILE")) {
+  fail("The Bedrock brain needs AWS_REGION (e.g. us-east-1), or an AWS_PROFILE whose config sets a region.");
+}
 const brain: Brain =
   brainName === "cursor"
     ? createCursorBrain({
@@ -68,11 +77,17 @@ const brain: Brain =
         accessToken: () => sessionManager.accessToken(),
         model: env("SIM_CURSOR_MODEL"),
       })
-    : createClaudeBrain({
-        apiKey: anthropicKey!,
-        session: () => sessionManager.ensureSession(),
-        model: env("SIM_MODEL"),
-      });
+    : brainName === "bedrock"
+      ? createBedrockBrain({
+          session: () => sessionManager.ensureSession(),
+          model: env("SIM_BEDROCK_MODEL"),
+          region: awsRegion,
+        })
+      : createClaudeBrain({
+          apiKey: anthropicKey!,
+          session: () => sessionManager.ensureSession(),
+          model: env("SIM_MODEL"),
+        });
 
 let tts: TtsConfig;
 try {

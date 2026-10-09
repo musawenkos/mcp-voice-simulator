@@ -7,7 +7,8 @@
 import type Anthropic from "@anthropic-ai/sdk";
 
 import { callTool, type McpSession } from "../mcp.js";
-import type { Brain, BrainTurnResult } from "./types.js";
+import { withTurnContext } from "./context.js";
+import type { Brain, BrainTurnContext, BrainTurnResult } from "./types.js";
 
 const DEFAULT_SYSTEM_PROMPT = [
   "You are a voice assistant speaking through a smart display. Replies are read aloud: one to three short sentences, no markdown, no lists.",
@@ -46,7 +47,7 @@ export function createClaudeBrain(options: ClaudeBrainOptions): Brain {
     reset() {
       history.length = 0;
     },
-    async turn(utterance: string): Promise<BrainTurnResult> {
+    async turn(utterance: string, context?: BrainTurnContext): Promise<BrainTurnResult> {
       const anthropic = await getClient();
       const session = await options.session();
       // The MCP tool's inputSchema is already the JSON Schema shape Anthropic's
@@ -58,7 +59,7 @@ export function createClaudeBrain(options: ClaudeBrainOptions): Brain {
         description: t.description ?? t.title ?? t.name,
         input_schema: t.inputSchema as Anthropic.Tool["input_schema"],
       }));
-      history.push({ role: "user", content: utterance });
+      history.push({ role: "user", content: withTurnContext(utterance, context) });
 
       const trace: BrainTurnResult["trace"] = [];
       for (let round = 0; round < maxToolRounds; round++) {

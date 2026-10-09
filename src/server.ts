@@ -9,7 +9,7 @@ import http from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { Brain } from "./brains/types.js";
+import type { Brain, BrainTurnContext } from "./brains/types.js";
 import { HTML_SECURITY_HEADERS, guardRequest } from "./security.js";
 import type { McpSessionManager } from "./session.js";
 import { createTtsRoute } from "./tts/route.js";
@@ -37,6 +37,11 @@ export interface CreateServerOptions {
    * sandbox to have different origins.
    */
   ui?: boolean | { sandboxPort?: number };
+  /**
+   * Context the host app adds to every turn (e.g. the device's location). A
+   * `context` object the page sends with the utterance overrides its keys.
+   */
+  turnContext?: () => BrainTurnContext | undefined | Promise<BrainTurnContext | undefined>;
 }
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
@@ -56,6 +61,20 @@ class HttpError extends Error {
   ) {
     super(message);
   }
+}
+
+/** Turn context comes from the page or a host app; keep it small and plain. */
+const MAX_CONTEXT_BYTES = 4096;
+
+function readTurnContext(value: unknown): BrainTurnContext | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new HttpError(400, "context must be a JSON object.");
+  }
+  if (Buffer.byteLength(JSON.stringify(value)) > MAX_CONTEXT_BYTES) {
+    throw new HttpError(400, `context must be at most ${MAX_CONTEXT_BYTES} bytes of JSON.`);
+  }
+  return value as BrainTurnContext;
 }
 
 async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
@@ -163,13 +182,17 @@ export function createServer(options: CreateServerOptions): http.Server {
       }
 
       if (req.method === "POST" && path === "/api/turn") {
-        const body = (await readJsonBody(req)) as { utterance?: unknown };
+        const body = (await readJsonBody(req)) as { utterance?: unknown; context?: unknown };
         if (typeof body.utterance !== "string" || !body.utterance.trim()) {
           return json(res, 400, { error: "utterance is required" });
         }
+        const sent = readTurnContext(body.context);
         const cleaned = body.utterance.replace(/^\s*(alexa|hey\s+\w+)[,.!]?\s*/i, "").trim();
-        const { reply, trace } = await options.brain.turn(cleaned);
-        lastAwaitingConfirm = /\b(confirm|say yes|shall i|want me to)\b/i.test(reply);
+        const context = { ...(await options.turnContext?.()), ...sent };
+        const result = await options.brain.turn(cleaned, Object.keys(context).length ? context : undefined);
+        const { reply, trace } = result;
+        lastAwaitingConfirm =
+          result.awaitingConfirmation === true || /\b(confirm|say yes|shall i|want me to)\b/i.test(reply);
         return json(res, 200, {
           reply,
           trace,

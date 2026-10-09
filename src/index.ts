@@ -17,9 +17,23 @@ export {
   type ToolCallTrace,
 } from "./mcp.js";
 export { McpSessionManager, type LinkStatus, type McpSessionManagerOptions } from "./session.js";
-export type { Brain, BrainTurnResult } from "./brains/types.js";
+export type { Brain, BrainTurnContext, BrainTurnResult } from "./brains/types.js";
+export { withTurnContext } from "./brains/context.js";
+export {
+  ConfirmationGate,
+  defaultClassifyToolCall,
+  heldCallMessage,
+  type ClassifyToolCall,
+  type ToolCallKind,
+} from "./brains/confirm.js";
 export { createClaudeBrain, type ClaudeBrainOptions } from "./brains/claude.js";
 export { createCursorBrain, type CursorBrainOptions } from "./brains/cursor.js";
+export {
+  createBedrockBrain,
+  DEFAULT_BEDROCK_MODEL,
+  type BedrockBrainOptions,
+  type BedrockClientLike,
+} from "./brains/bedrock.js";
 export { createServer, type CreateServerOptions } from "./server.js";
 export { TtsError, type TtsAudio, type TtsErrorKind, type TtsProvider } from "./tts/types.js";
 export {
