@@ -93,6 +93,7 @@ bearer token and want to skip account linking entirely, set
 | `SIM_LINK_TIMEOUT_MS` | how long to wait for you to finish logging in, in milliseconds (default `300000`, 5 minutes). Servers that make you connect several providers on first use can need every minute of it |
 | `SIM_UI`, `SIM_SANDBOX_PORT` | MCP Apps views, see [On-screen views](#on-screen-views-mcp-apps) |
 | `SIM_TTS` and `ELEVENLABS_*` | optional server-side voice, see [Voice](#voice-text-to-speech) |
+| `SIM_HOST`, `SIM_ALLOWED_HOSTS`, `SIM_PUBLIC_ORIGIN`, `SIM_ACCESS_TOKEN` | reach the page from a phone, see [On a phone](#on-a-phone-location-camera-https) |
 | `SIM_BRAIN` | force `claude`, `cursor` or `bedrock` (default: cursor if `CURSOR_API_KEY` is set, else claude; Bedrock is never picked on its own) |
 | `ANTHROPIC_API_KEY`, `SIM_MODEL` | for the Claude brain (`SIM_MODEL` default `claude-sonnet-5`) |
 | `CURSOR_API_KEY`, `SIM_CURSOR_MODEL` | for the Cursor brain (`SIM_CURSOR_MODEL` default `composer-2.5`) |
@@ -234,6 +235,89 @@ const myVoice: TtsProvider = {
 createServer({ sessionManager, brain, tts: myVoice });
 ```
 
+## On a phone (location, camera, HTTPS)
+
+Voice assistants are often used on the move, and some requests depend on where the user is or on a photo they just
+took. The page can send both as [turn context](#turn-context), and it works on a phone browser (tested on Android
+Chrome): big tap targets, the mic at the bottom where a thumb reaches it, and a ☀ button for high contrast in daylight.
+
+- **📍 Location** (opt-in): while on, the page watches the device's position with high accuracy and sends the latest
+  fix with every utterance as `context.location`:
+  `{ latitude, longitude, accuracyMeters, timestamp, ageSeconds }`. The device row shows the fix, its accuracy and
+  age, warns when it's worse than 50 m or older than 60 s, and says so plainly when there's no fix or the permission
+  was denied. The choice is remembered on that device.
+- **📷 Photo** (shown only when the host app provides an `onPhoto` hook): takes a photo with the back camera
+  (`capture="environment"`); 🖼 picks an existing one instead. The page posts it to the simulator, **never to the MCP
+  server directly**; the hook stores it and returns an id, which goes in the next utterance's `context.photos`. The
+  hook can also return an `utterance` the page then sends straight away (e.g. "I just took a photo."), so a photo can
+  trigger a turn on its own. The simulator accepts JPEG, PNG and WebP up to 10 MB by default, checked against the
+  file's bytes, not its name or declared type.
+
+```ts
+createServer({
+  sessionManager,
+  brain,
+  // Credentials for your storage stay in this process; the browser only gets the id.
+  onPhoto: async ({ data, contentType }) => ({ id: await myStorage.put(data, contentType) }),
+  photoMaxBytes: 8 * 1024 * 1024,           // optional
+  photoTypes: ["image/jpeg", "image/png"], // optional
+});
+```
+
+### HTTPS and access
+
+Phone browsers only allow the microphone, location and camera on `https://` pages (or `localhost`), so use an HTTPS
+tunnel to the simulator, for example a [Cloudflare quick tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/)
+(no account needed). The simulator keeps listening on 127.0.0.1; only the tunnel reaches it.
+
+```bash
+# 1. Start the tunnel and note the https://<random>.trycloudflare.com URL it prints.
+cloudflared tunnel --url http://127.0.0.1:8790
+
+# 2. Start the simulator, allowing exactly that origin and setting an access token.
+SIM_PUBLIC_ORIGIN=https://<random>.trycloudflare.com \
+SIM_ACCESS_TOKEN="$(openssl rand -base64 24)" \
+MCP_URL=... mcp-voice-simulator
+```
+
+Open the tunnel URL on the phone and enter the access token once. Then allow the microphone and, if you use them,
+location and the camera when the browser asks.
+
+| Env var | Purpose |
+| --- | --- |
+| `SIM_HOST` | address to listen on (default `127.0.0.1`). Anything else, e.g. `0.0.0.0` for the LAN, exposes the page. |
+| `SIM_PUBLIC_ORIGIN` | the tunnel's origin, e.g. `https://abc.trycloudflare.com`. Its host is accepted as `Host` and the origin as `Origin`, exactly; no wildcards. |
+| `SIM_ALLOWED_HOSTS` | extra `Host` values, comma-separated, exactly as the browser sends them (`192.168.1.20:8790`). |
+| `SIM_ACCESS_TOKEN` | the secret the page asks for, at least 16 characters. **Required** whenever any of the three above exposes the page: the simulator refuses to start without it. Optional on loopback, and enforced if set. |
+
+**Security notes.**
+- The defaults are unchanged: 127.0.0.1 only, loopback `Host` and `Origin` only, no token.
+- The DNS-rebinding and CSRF guards stay on when exposed; the allow-lists are only extended by what you configure.
+  Every POST still needs JSON (or an allowed image type for the photo upload), neither of which a cross-origin page can
+  send without a CORS preflight, and the simulator sends no CORS headers.
+- The access token is checked in constant time, and 10 wrong tries in 10 minutes lock entry for the rest of that
+  window. A right one gets a cookie (`HttpOnly`, `SameSite=Lax`, `Secure` on an https origin, 12 hours) holding an
+  expiry and an HMAC of it keyed by the token: no token in the cookie, nothing stored server-side, and changing the
+  token signs everyone out.
+- Anyone with the tunnel URL **and** the token can use your linked account and your LLM credits. Use a long random
+  token, stop the tunnel when you're done, and don't share either in places that get indexed.
+- JSON request bodies are capped at 1 MB and photos at their limit, so an exposed simulator can't be made to buffer
+  huge bodies.
+
+### MCP Apps views on a phone (not supported yet)
+
+Views run in a sandbox on a second origin, `http://127.0.0.1:<port + 1>`, which only exists on the computer running
+the simulator. Through a tunnel the page reports views as unavailable ("not on this device") and shows text only.
+Supporting them would need:
+
+1. A second tunnel for the sandbox port, and a setting for its public origin (say `SIM_SANDBOX_PUBLIC_ORIGIN`) that
+   `/api/status` reports as `sandboxOrigin` instead of the loopback one. It must be a different origin from the page,
+   as the spec requires, and https, or the browser blocks it as mixed content.
+2. The sandbox's host check (`allowedHosts` in `ui/sandbox.ts`) and its referrer check (only loopback page origins
+   today) extended to exactly the configured tunnel host and page origin.
+3. A decision on access control for the sandbox: it serves only the static proxy page, and views get their data from
+   the host page over `postMessage`, so it may not need the token, but that should be checked against the view CSP.
+
 ## Programmatic API
 
 For a custom brain, or to embed the simulator in your own app:
@@ -269,7 +353,10 @@ createServer({ sessionManager, brain, turnContext: () => ({ location: lastKnownL
 or from the page with a single utterance, as `POST /api/turn {"utterance": "...",
 "context": {...}}` (a JSON object of at most 4 KB; its keys override the
 host's). The built-in brains give it to the model ahead of the utterance,
-labelled as coming from the app rather than from the user.
+labelled as coming from the app rather than from the user. The page itself
+sends `location` and `photos` this way when those features are on (see
+[On a phone](#on-a-phone-location-camera-https)); a host app can map them to
+whatever its prompt expects inside its brain.
 
 The discovery and linking pieces are exported individually too
 (`discoverProtectedResource`, `discoverAuthorizationServer`,
@@ -311,9 +398,15 @@ if (!report.passed) console.error(report.results.filter((r) => !r.pass));
 ```text
 public/index.html   Browser UI: device-styled screen, mic (SpeechRecognition),
                      spoken replies, tool-call trace log
+                     location and photo capture, phone layout
+public/access.html    Access-token prompt, served instead of the page until the token is entered
 public/tts.js         The page's voice: browser speechSynthesis, or /api/tts audio
 public/host.js        GENERATED browser MCP Apps host (AppBridge); source in host/
-src/server.ts        HTTP API: /api/status, /api/relink, /api/turn, /api/reset, /api/tts, /api/ui/tool-call
+src/server.ts        HTTP API: /api/status, /api/relink, /api/turn, /api/reset, /api/tts, /api/ui/tool-call,
+                     /api/photo, /api/access
+src/security.ts      Host/Origin/content-type guards (DNS rebinding, CSRF), opt-in allowed hosts
+src/access.ts        Access token and its signed cookie, for an exposed simulator
+src/photo.ts         Photo upload checks (size, type from the bytes) and the host's onPhoto hook types
 src/tts/              Text-to-speech providers (ElevenLabs), cache, route
 src/ui/               MCP Apps: view resolution, CSP, sandbox proxy server, routes
 host/                 Browser host source (bundled to public/host.js by scripts/build-host.mjs)

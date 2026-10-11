@@ -7,7 +7,7 @@
 <style>
   :root {
     --bg: #0e1116; --panel: #161b22; --line: #2a313c; --text: #e6edf3; --muted: #8b949e;
-    --accent: #00caff; --ok: #3fb950; --err: #f85149; --screen: #05080d;
+    --accent: #00caff; --ok: #3fb950; --err: #f85149; --screen: #05080d; --warn: #d29922; --device: #1c2128;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, sans-serif; }
@@ -17,7 +17,7 @@
   .disclaimer { max-width: 1280px; margin: 12px auto 0; padding: 0 16px; color: var(--muted); font-size: 12px; }
 
   /* A voice-and-screen device shape, not any specific real product. */
-  .device { background: #1c2128; border-radius: 28px; padding: 20px; border: 1px solid var(--line); }
+  .device { background: var(--device); border-radius: 28px; padding: 20px; border: 1px solid var(--line); }
   .screen { position: relative; width: 100%; aspect-ratio: 2 / 1; background: var(--screen); border-radius: 10px; overflow: hidden;
             display: flex; flex-direction: column; justify-content: center; padding: 5% 6%; container-type: inline-size; }
   .ring { position: absolute; left: 0; right: 0; bottom: 0; height: 6px; background: transparent; transition: background .2s, box-shadow .2s; }
@@ -44,7 +44,7 @@
   .size { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; margin-left: auto; }
   select { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; font: inherit; font-size: 13px; }
   .note { color: var(--muted); font-size: 12px; }
-  .note.warn { color: #d29922; }
+  .note.warn { color: var(--warn); }
   .controls { display: flex; gap: 8px; margin-top: 16px; }
   input[type=text] { flex: 1; min-width: 0; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font: inherit; }
   button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; font: inherit; cursor: pointer; }
@@ -71,6 +71,44 @@
   pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; font: 12px/1.4 ui-monospace, monospace; color: var(--muted); }
   .tools { display: flex; flex-wrap: wrap; gap: 6px; }
   .tools span { font: 12px ui-monospace, monospace; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
+  .status > * { min-width: 0; overflow-wrap: anywhere; }
+
+  /* Device features (location, camera), both opt-in; their state goes with each utterance. */
+  .field { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+  .field .state { color: var(--muted); font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+  .field .state.warn { color: var(--warn); } .field .state.bad { color: var(--err); }
+
+  /* High contrast for bright daylight, toggled with the sun button. */
+  body[data-theme="sun"] { --bg: #ffffff; --panel: #f2f4f7; --line: #8c959f; --text: #000000; --muted: #24292f;
+                           --accent: #0550ae; --ok: #116329; --err: #a40e26; --warn: #7d4e00; --screen: #ffffff; --device: #e6e9ed; }
+  body[data-theme="sun"] button.primary, body[data-theme="sun"] a.linkbtn { color: #ffffff; }
+
+  /* Phones: one column, big text, big tap targets, the mic at the bottom where a thumb reaches it. */
+  @media (max-width: 640px) {
+    body { font-size: 17px; }
+    main { padding: 12px 12px 24px; gap: 16px; }
+    h1 { font-size: 13px; }
+    .device { padding: 12px; border-radius: 20px; }
+    .screen { aspect-ratio: auto; min-height: 40vh; padding: 20px 18px 24px; }
+    .heard { font-size: 17px; margin-bottom: 10px; }
+    .reply { font-size: 24px; }
+    .hint { font-size: 17px; }
+    .confirm { margin-top: 16px; gap: 12px; }
+    .confirm button { flex: 1; min-height: 56px; font-size: 20px; }
+    .controls { flex-wrap: wrap; }
+    .controls input[type=text], .controls button, .field button { min-height: 48px; font-size: 17px; }
+    .controls input[type=text] { flex: 1 1 100%; order: 1; }
+    .controls #send { flex: 1; order: 2; }
+    .controls #speak, .controls #reset, .controls #sun { order: 3; min-width: 52px; }
+    .controls #mic { order: 4; flex: 1 1 100%; min-height: 84px; font-size: 38px; border-radius: 42px; }
+    .controls #mic[aria-pressed="true"] { background: var(--accent); color: #002733; }
+    .field { margin-top: 10px; gap: 6px; }
+    .field button { padding: 10px 12px; }
+    .field .state { font-size: 15px; flex: 1 1 100%; order: 5; }
+    .size { display: none; }
+    .chips button { min-height: 44px; }
+    .log { max-height: none; }
+  }
 </style>
 </head>
 <body>
@@ -95,7 +133,17 @@
         <button type="submit" class="primary" id="send">Send</button>
         <button type="button" id="speak" aria-pressed="true" title="Speak replies aloud">🔊</button>
         <button type="button" id="reset" title="Start a new conversation">↺</button>
+        <button type="button" id="sun" aria-pressed="false" title="High-contrast colours for bright light">☀</button>
       </form>
+      <div class="field">
+        <button type="button" id="locate" aria-pressed="false" title="Send this device's location with each utterance">📍 Location</button>
+        <button type="button" id="camera" hidden title="Take a photo">📷 Photo</button>
+        <button type="button" id="pick" hidden title="Pick a photo from this device">🖼</button>
+        <input type="file" id="camera-input" accept="image/*" capture="environment" hidden>
+        <input type="file" id="pick-input" accept="image/*" hidden>
+        <span class="state" id="geo" aria-live="polite">Location off</span>
+        <span class="state" id="photo-state" aria-live="polite"></span>
+      </div>
       <div class="chips" id="chips">
       </div>
       <label class="size">Screen
@@ -142,6 +190,9 @@ let hostModule = null; // /host.js, loaded the first time a view is shown
 let mountedView = null;
 let busy = false;
 let toolChipsBuilt = false;
+let photoLimits = null; // { maxBytes, types } when the host takes photos, from /api/status
+let pendingPhotos = []; // uploaded photo ids not yet sent with a turn
+let queuedUtterance = null; // a photo's follow-up turn, waiting for the running turn to finish
 
 const setState = (state) => { screen.dataset.state = state; };
 const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -197,18 +248,22 @@ function showLinkFailed(s) {
 
 async function loadStatus() {
   clearTimeout(poll);
-  const s = await (await fetch("/api/status")).json();
+  const res = await fetch("/api/status");
+  if (res.status === 401) return location.reload(); // the access cookie expired: show the token prompt
+  const s = await res.json();
   if (!s.linking) stopLinkTimers();
   if (s.linking) showLinking(s);
   else if (s.linkFailed) showLinkFailed(s);
   else $("status").innerHTML = s.linked
     ? `<span><i class="dot ok"></i>Account linked</span><span>${esc(s.mcpUrl ?? "")}</span>` +
       `<span>Brain: ${esc(s.brain ?? "")}</span><span>Voice: ${esc(s.tts?.name ?? "browser")}</span>` +
-      `<span>Views: ${s.ui?.enabled ? "on" : "off"}</span>` +
+      `<span${s.ui?.unavailable ? ` title="${esc(s.ui.unavailable)}"` : ""}>Views: ${s.ui?.enabled ? (s.ui.unavailable ? "not on this device" : "on") : "off"}</span>` +
       (ttsNote ? `<span><i class="dot bad"></i>${esc(ttsNote)}</span>` : "")
     : `<span><i class="dot bad"></i>Not connected</span><span>${esc(s.error ?? "")}</span>`;
   speaker.setProvider(s.tts?.name ?? "browser");
   uiStatus = s.ui ?? { enabled: false };
+  photoLimits = s.photos ?? null;
+  $("camera").hidden = $("pick").hidden = !photoLimits;
   $("tools").innerHTML = (s.tools ?? []).map((t) =>
     `<span title="${esc(t.description)}${t.ui ? ` — view: ${esc(t.ui)}` : ""}">${esc(t.name)}${t.ui ? " 🖼" : ""}</span>`).join("");
   if (!toolChipsBuilt && (s.tools ?? []).length) {
@@ -268,7 +323,8 @@ const logCsp = ({ directive, blockedUri }) =>
 function logTurn(utterance, data, opts = {}) {
   const calls = (data.trace ?? []).map(callDetails).join("");
   const notes = (data.uiWarnings ?? []).map((w) => `<div class="note warn">${esc(w)}</div>`).join("");
-  appendLog(`<div class="you">You${opts.fromView ? " (from a view)" : ""}: ${esc(utterance)}</div><div class="reply">${esc(data.reply ?? data.error ?? "")}</div>${calls}${notes}`);
+  const from = opts.fromView ? " (from a view)" : opts.fromPhoto ? " (after a photo)" : "";
+  appendLog(`<div class="you">You${from}: ${esc(utterance)}</div><div class="reply">${esc(data.reply ?? data.error ?? "")}</div>${calls}${notes}`);
 }
 
 // ---- MCP Apps views: the page is the host (the protocol lives in /host.js).
@@ -320,9 +376,14 @@ async function say(utterance, opts = {}) {
   $("heard").textContent = `“${utterance}”`;
   setState("thinking");
   try {
-    const res = await fetch("/api/turn", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ utterance }) });
+    const context = turnContext();
+    const res = await fetch("/api/turn", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ utterance, context }) });
+    if (res.status === 401) return location.reload();
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
+    const sent = context?.photos ?? [];
+    pendingPhotos = pendingPhotos.filter((id) => !sent.includes(id));
+    if (sent.length) $("photo-state").textContent = "";
     $("reply").textContent = data.reply;
     screen.dataset.confirm = String(data.awaitingConfirm);
     logTurn(utterance, data, opts);
@@ -335,10 +396,154 @@ async function say(utterance, opts = {}) {
     await clearView();
   } finally {
     busy = false; send.disabled = false; setState("idle");
-    input.value = "";
+    if (!opts.fromPhoto && !opts.fromView) input.value = "";
     loadStatus();
+    if (queuedUtterance) {
+      const next = queuedUtterance;
+      queuedUtterance = null;
+      say(next, { fromPhoto: true });
+    }
   }
 }
+
+// ---- Device features: the page adds what the device knows to each turn's context.
+// Both are opt-in. The host app decides what to do with them (see the README).
+const stored = (key, value) => {
+  try { if (value === undefined) return localStorage.getItem(key); localStorage.setItem(key, value); } catch { return null; }
+};
+
+function turnContext() {
+  const context = {};
+  const location = geoContext();
+  if (location) context.location = location;
+  if (pendingPhotos.length) context.photos = [...pendingPhotos];
+  return Object.keys(context).length ? context : undefined;
+}
+
+// Location: watchPosition with high accuracy while switched on.
+const GEO_STALE_SECONDS = 60; // older than this, the fix probably isn't where the user is now
+const GEO_POOR_METRES = 50;   // worse than this, "here" could be the wrong spot
+let geoWatch = null, geoFix = null, geoError = "";
+
+const fixAge = () => Math.max(0, Math.round((Date.now() - geoFix.timestamp) / 1000));
+
+function geoContext() {
+  if (geoWatch === null || !geoFix) return undefined;
+  const { latitude, longitude, accuracy } = geoFix.coords;
+  return {
+    latitude: Number(latitude.toFixed(6)),
+    longitude: Number(longitude.toFixed(6)),
+    accuracyMeters: Math.round(accuracy),
+    timestamp: new Date(geoFix.timestamp).toISOString(),
+    ageSeconds: fixAge(),
+  };
+}
+
+function renderGeo() {
+  const el = $("geo");
+  $("locate").setAttribute("aria-pressed", String(geoWatch !== null));
+  let text, kind = "";
+  if (geoWatch === null) {
+    text = geoError || "Location off";
+    kind = geoError ? "bad" : "";
+  } else if (!geoFix) {
+    text = geoError || "No GPS fix yet…";
+    kind = "warn";
+  } else {
+    const { latitude, longitude, accuracy } = geoFix.coords;
+    const age = fixAge();
+    const problems = [accuracy > GEO_POOR_METRES && "low accuracy", age > GEO_STALE_SECONDS && "stale"].filter(Boolean);
+    text = `📍 ${latitude.toFixed(5)}, ${longitude.toFixed(5)} ±${Math.round(accuracy)} m · ${age} s ago` +
+      (problems.length ? ` · ${problems.join(", ")}` : "");
+    kind = problems.length ? "warn" : "";
+  }
+  el.textContent = text;
+  el.className = kind ? `state ${kind}` : "state";
+}
+
+function startGeo() {
+  geoError = "";
+  if (!("geolocation" in navigator)) geoError = "This browser can't share its location.";
+  else if (!window.isSecureContext) geoError = "Location needs HTTPS (or localhost).";
+  if (geoError) return renderGeo();
+  geoWatch = navigator.geolocation.watchPosition(
+    (position) => { geoFix = position; geoError = ""; renderGeo(); },
+    (err) => {
+      if (err.code === err.PERMISSION_DENIED) {
+        stopGeo();
+        geoError = "Location is blocked for this site. Allow it in the browser's site settings, then tap Location again.";
+      } else {
+        geoError = err.code === err.TIMEOUT ? "Still waiting for a GPS fix…" : "No GPS fix available here.";
+      }
+      renderGeo();
+    },
+    { enableHighAccuracy: true, maximumAge: 5000, timeout: 30000 },
+  );
+  stored("sim.location", "on");
+  renderGeo();
+}
+
+function stopGeo() {
+  if (geoWatch !== null) navigator.geolocation.clearWatch(geoWatch);
+  geoWatch = null; geoFix = null; geoError = "";
+  stored("sim.location", "off");
+  renderGeo();
+}
+
+$("locate").addEventListener("click", () => (geoWatch === null ? startGeo() : stopGeo()));
+setInterval(() => geoWatch !== null && geoFix && renderGeo(), 1000);
+if (stored("sim.location") === "on") startGeo();
+
+// Photos: the server's host hook stores them and returns an id for the next turn's context.
+async function uploadPhoto(file) {
+  const state = $("photo-state");
+  if (!file || !photoLimits) return;
+  if (!photoLimits.types.includes(file.type)) {
+    state.textContent = `Only ${photoLimits.types.map((t) => t.replace("image/", "")).join(", ")} photos can be uploaded.`;
+    state.className = "state bad";
+    return;
+  }
+  if (file.size > photoLimits.maxBytes) {
+    state.textContent = `That photo is too big (limit ${Math.round(photoLimits.maxBytes / 1048576)} MB).`;
+    state.className = "state bad";
+    return;
+  }
+  state.textContent = "Uploading photo…"; state.className = "state";
+  try {
+    const res = await fetch("/api/photo", { method: "POST", headers: { "content-type": file.type }, body: file });
+    if (res.status === 401) return location.reload();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error ?? `upload failed (${res.status})`);
+    pendingPhotos = [...pendingPhotos.filter((id) => id !== data.id), data.id].slice(-5);
+    state.textContent = `📷 Photo ready (${data.id.slice(0, 8)}), sent with your next utterance`;
+    logNote(`Photo uploaded: ${data.id}`, false);
+    if (data.utterance) {
+      if (busy) queuedUtterance = data.utterance;
+      else say(data.utterance, { fromPhoto: true });
+    }
+  } catch (err) {
+    state.textContent = `Photo not uploaded: ${err.message}`;
+    state.className = "state bad";
+  }
+}
+
+for (const [button, picker] of [["camera", "camera-input"], ["pick", "pick-input"]]) {
+  $(button).addEventListener("click", () => $(picker).click());
+  $(picker).addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // so the same file can be chosen again
+    uploadPhoto(file);
+  });
+}
+
+// High contrast for bright light.
+function setSun(on) {
+  if (on) document.body.dataset.theme = "sun"; else delete document.body.dataset.theme;
+  $("sun").setAttribute("aria-pressed", String(on));
+  stored("sim.theme", on ? "sun" : "default");
+}
+$("sun").addEventListener("click", () => setSun(document.body.dataset.theme !== "sun"));
+if (stored("sim.theme") === "sun") setSun(true);
 
 $("form").addEventListener("submit", (e) => { e.preventDefault(); say(input.value); });
 document.addEventListener("click", (e) => {
@@ -372,6 +577,15 @@ if (Recognition) {
   rec.interimResults = false;
   rec.onstart = () => { setState("listening"); $("mic").setAttribute("aria-pressed", "true"); };
   rec.onend = () => { if (!busy) setState("idle"); $("mic").setAttribute("aria-pressed", "false"); };
+  // Without this a blocked mic (e.g. a plain-http page on a phone) just does nothing.
+  const MIC_PROBLEMS = {
+    "not-allowed": "The microphone is blocked for this site. Allow it in the browser's site settings (it needs HTTPS or localhost).",
+    "service-not-allowed": "Speech recognition isn't allowed here. It needs HTTPS (or localhost) and the microphone permission.",
+    "audio-capture": "No microphone was found.",
+    "network": "Speech recognition needs a network connection.",
+    "no-speech": "I didn't hear anything. Tap the mic and speak.",
+  };
+  rec.onerror = (e) => { if (MIC_PROBLEMS[e.error] && !busy) $("heard").textContent = MIC_PROBLEMS[e.error]; };
   rec.onresult = (e) => {
     const heard = e.results[0][0].transcript;
     if (busy || Date.now() < quietUntil || isEcho(heard)) return; // our own spoken reply, or a stale result

@@ -96,16 +96,32 @@ try {
   fail(err instanceof Error ? err.message : String(err));
 }
 
-createServer({
-  sessionManager,
-  brain,
-  port,
-  tts: tts.provider,
-  ttsMaxChars: tts.maxChars,
-  ttsCacheEntries: tts.cacheEntries,
-  ui: uiEnabled ? { sandboxPort } : false,
-});
+// Reaching the page from another device (a phone through a tunnel, or the LAN). See the README.
+const host = env("SIM_HOST") ?? "127.0.0.1";
+const exposure = {
+  allowedHosts: env("SIM_ALLOWED_HOSTS")?.split(","),
+  publicOrigin: env("SIM_PUBLIC_ORIGIN"),
+};
+try {
+  createServer({
+    sessionManager,
+    brain,
+    port,
+    host,
+    exposure,
+    accessToken: env("SIM_ACCESS_TOKEN"),
+    tts: tts.provider,
+    ttsMaxChars: tts.maxChars,
+    ttsCacheEntries: tts.cacheEntries,
+    ui: uiEnabled ? { sandboxPort } : false,
+  });
+} catch (err) {
+  const message = err instanceof Error ? err.message : String(err);
+  fail(/access token/.test(message) ? `${message} Set SIM_ACCESS_TOKEN (at least 16 characters).` : message);
+}
 console.log(`mcp-voice-simulator: http://127.0.0.1:${port}`);
+if (exposure.publicOrigin) console.log(`  Public page: ${exposure.publicOrigin} (access token required)`);
+else if (host !== "127.0.0.1" || exposure.allowedHosts) console.log(`  Listening on ${host} (access token required)`);
 console.log(`  MCP server: ${mcpUrl}`);
 console.log(`  Brain: ${brainName}`);
 console.log(`  Voice: ${tts.provider?.name ?? "browser"}`);

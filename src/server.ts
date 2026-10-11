@@ -9,8 +9,24 @@ import http from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { createAccessGate, type AccessGate } from "./access.js";
 import type { Brain, BrainTurnContext } from "./brains/types.js";
-import { HTML_SECURITY_HEADERS, guardRequest } from "./security.js";
+import {
+  DEFAULT_PHOTO_MAX_BYTES,
+  DEFAULT_PHOTO_TYPES,
+  PhotoError,
+  checkPhoto,
+  readBodyLimited,
+  type PhotoHook,
+} from "./photo.js";
+import {
+  HTML_SECURITY_HEADERS,
+  guardRequest,
+  isExposed,
+  isLoopbackRequest,
+  normalizeExposure,
+  type Exposure,
+} from "./security.js";
 import type { McpSessionManager } from "./session.js";
 import { createTtsRoute } from "./tts/route.js";
 import type { TtsProvider } from "./tts/types.js";
@@ -42,6 +58,31 @@ export interface CreateServerOptions {
    * `context` object the page sends with the utterance overrides its keys.
    */
   turnContext?: () => BrainTurnContext | undefined | Promise<BrainTurnContext | undefined>;
+  /** Address to listen on. Default `127.0.0.1`; anything else exposes the page and needs `accessToken`. */
+  host?: string;
+  /**
+   * Extra `Host` values and a public (tunnel) origin the page may be served
+   * from, e.g. to use it on a phone. Setting either needs `accessToken`.
+   */
+  exposure?: Exposure;
+  /**
+   * Secret the page asks for once before it works (at least 16 characters).
+   * Required when the server is exposed; optional, and then enforced, on loopback.
+   */
+  accessToken?: string;
+  /** How long one entry of the access token lasts, in seconds. Default 12 hours. */
+  accessMaxAgeSeconds?: number;
+  /**
+   * Photo capture: the page's camera button posts images here and the hook
+   * stores them (e.g. on the MCP server, with credentials kept server-side),
+   * returning the id the next turn's context carries as `photos`. Omit to hide
+   * the camera button.
+   */
+  onPhoto?: PhotoHook;
+  /** Largest photo accepted, in bytes. Default 10 MB. */
+  photoMaxBytes?: number;
+  /** Photo types accepted, checked against the file's bytes. Default JPEG, PNG and WebP. */
+  photoTypes?: readonly string[];
 }
 
 function json(res: http.ServerResponse, status: number, body: unknown): void {
@@ -77,18 +118,45 @@ function readTurnContext(value: unknown): BrainTurnContext | undefined {
   return value as BrainTurnContext;
 }
 
+/** Big enough for any request the page sends; stops an exposed server buffering huge bodies. */
+const MAX_JSON_BYTES = 1024 * 1024;
+
 async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  if (!chunks.length) return {};
+  let body: Buffer;
   try {
-    return JSON.parse(Buffer.concat(chunks).toString());
+    body = await readBodyLimited(req, MAX_JSON_BYTES);
+  } catch (err) {
+    if (err instanceof PhotoError) throw new HttpError(413, "Request body is too big.");
+    throw err;
+  }
+  if (!body.length) return {};
+  try {
+    return JSON.parse(body.toString());
   } catch {
     throw new HttpError(400, "Request body is not valid JSON.");
   }
 }
 
+/** Who may reach the page, checked before listening so a bad setup never starts. */
+function accessSetup(options: CreateServerOptions): { exposure: Exposure; gate?: AccessGate } {
+  const host = options.host ?? "127.0.0.1";
+  const exposure = normalizeExposure(options.exposure);
+  const token = options.accessToken?.trim() || undefined;
+  if (isExposed(host, exposure) && !token) {
+    throw new Error(
+      "The simulator is exposed beyond this computer (a non-loopback host, extra allowed hosts or a public origin), " +
+        "so it needs an access token: anyone who can reach it could otherwise drive the brain and the linked account.",
+    );
+  }
+  const secureCookie = exposure.publicOrigin?.startsWith("https:") ?? false;
+  const gate = token ? createAccessGate({ token, secureCookie, maxAgeSeconds: options.accessMaxAgeSeconds }) : undefined;
+  return { exposure, gate };
+}
+
 export function createServer(options: CreateServerOptions): http.Server {
+  const { exposure, gate } = accessSetup(options);
+  const photoTypes = options.photoTypes ?? DEFAULT_PHOTO_TYPES;
+  const photoMaxBytes = options.photoMaxBytes ?? DEFAULT_PHOTO_MAX_BYTES;
   const publicDir = options.publicDir ?? DEFAULT_PUBLIC_DIR;
   let lastAwaitingConfirm = false;
   const tts = createTtsRoute({
@@ -116,22 +184,55 @@ export function createServer(options: CreateServerOptions): http.Server {
     },
   });
 
+  /**
+   * MCP Apps views load from the sandbox at http://127.0.0.1:<port+1>, which
+   * only exists on this computer. A page opened through a tunnel or the LAN
+   * can't reach it, so it's told views are unavailable instead.
+   */
+  function uiStatusFor(req: http.IncomingMessage, port: number) {
+    const status = ui.status();
+    if (!status.enabled || isLoopbackRequest(req, port)) return status;
+    return { enabled: true, unavailable: "MCP Apps views only work on the computer running the simulator." };
+  }
+
   const server = http.createServer(async (req, res) => {
     try {
       // The port is only known once we're listening (it may have been 0).
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : (options.port ?? 8790);
-      const guard = guardRequest(req, port);
+      const path = new URL(req.url ?? "/", "http://localhost").pathname;
+      const isPhotoPost = req.method === "POST" && path === "/api/photo" && options.onPhoto !== undefined;
+      const guard = guardRequest(req, port, { exposure, postTypes: isPhotoPost ? photoTypes : undefined });
       if (!guard.ok) return json(res, guard.status, { error: guard.error });
 
-      const path = new URL(req.url ?? "/", "http://localhost").pathname;
+      if (gate) {
+        if (req.method === "POST" && path === "/api/access") {
+          const body = (await readJsonBody(req)) as { token?: unknown };
+          const result = gate.login(body.token);
+          if (!result.ok) return json(res, result.status, { error: result.error });
+          res.setHeader("set-cookie", result.cookie);
+          return json(res, 200, { ok: true });
+        }
+        if (!gate.allows(req)) {
+          if (req.method === "GET" && (path === "/" || path === "/index.html")) {
+            res.writeHead(200, {
+              "content-type": "text/html; charset=utf-8",
+              "cache-control": "no-store",
+              ...HTML_SECURITY_HEADERS,
+            });
+            return res.end(await readFile(join(publicDir, "access.html")));
+          }
+          return json(res, 401, { error: "Enter the access token first.", accessRequired: true });
+        }
+      }
 
       if (req.method === "GET" && path === "/api/status") {
         const common = {
           mcpUrl: options.sessionManager.mcpUrl,
           brain: options.brain.name,
           tts: { name: tts.name },
-          ui: ui.status(),
+          ui: uiStatusFor(req, port),
+          ...(options.onPhoto ? { photos: { maxBytes: photoMaxBytes, types: photoTypes } } : {}),
         };
         // Doesn't wait for the human to finish logging in, so the page can show the link meanwhile.
         const link = await options.sessionManager.linkStatus();
@@ -202,6 +303,30 @@ export function createServer(options: CreateServerOptions): http.Server {
         });
       }
 
+      if (isPhotoPost) {
+        let photo;
+        try {
+          photo = checkPhoto(await readBodyLimited(req, photoMaxBytes), photoTypes);
+        } catch (err) {
+          if (err instanceof PhotoError) return json(res, err.status, { error: err.message });
+          throw err;
+        }
+        let result;
+        try {
+          result = await options.onPhoto!(photo);
+        } catch (err) {
+          // The host's storage failed; the MCP session and the brain are fine.
+          return json(res, 502, { error: err instanceof Error ? err.message : String(err) });
+        }
+        if (typeof result?.id !== "string" || !result.id.trim()) {
+          return json(res, 502, { error: "The photo hook returned no id." });
+        }
+        return json(res, 200, {
+          id: result.id,
+          ...(typeof result.utterance === "string" && result.utterance.trim() ? { utterance: result.utterance } : {}),
+        });
+      }
+
       if (req.method === "POST" && path === "/api/tts") {
         return await tts.handle(res, await readJsonBody(req));
       }
@@ -243,6 +368,6 @@ export function createServer(options: CreateServerOptions): http.Server {
   });
 
   server.on("close", () => sandbox?.close());
-  server.listen(mainPort, "127.0.0.1");
+  server.listen(mainPort, options.host ?? "127.0.0.1");
   return server;
 }

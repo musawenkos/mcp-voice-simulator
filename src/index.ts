@@ -35,6 +35,16 @@ export {
   type BedrockClientLike,
 } from "./brains/bedrock.js";
 export { createServer, type CreateServerOptions } from "./server.js";
+export { type Exposure } from "./security.js";
+export { MIN_ACCESS_TOKEN_LENGTH } from "./access.js";
+export {
+  DEFAULT_PHOTO_MAX_BYTES,
+  DEFAULT_PHOTO_TYPES,
+  sniffImageType,
+  type PhotoHook,
+  type PhotoHookResult,
+  type PhotoUpload,
+} from "./photo.js";
 export { TtsError, type TtsAudio, type TtsErrorKind, type TtsProvider } from "./tts/types.js";
 export {
   createElevenLabsTts,

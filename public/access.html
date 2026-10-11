@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP voice simulator: access</title>
+<style>
+  :root { --bg: #0e1116; --panel: #161b22; --line: #2a313c; --text: #e6edf3; --muted: #b1bac4; --accent: #00caff; --err: #ff7b72; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--text);
+         font: 17px/1.45 system-ui, sans-serif; padding: 16px; }
+  form { width: 100%; max-width: 420px; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 24px; display: grid; gap: 14px; }
+  h1 { margin: 0; font-size: 20px; }
+  p { margin: 0; color: var(--muted); font-size: 15px; }
+  input { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 14px; font: inherit; }
+  button { min-height: 52px; background: var(--accent); color: #002733; border: 0; border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .6; }
+  .error { color: var(--err); min-height: 1.4em; }
+</style>
+</head>
+<body>
+<form id="form">
+  <h1>Access token</h1>
+  <p>This simulator is reachable from other devices, so it asks for the access token it was started with. You only enter it once on this device.</p>
+  <input id="token" type="password" autocomplete="current-password" placeholder="Access token" required autofocus>
+  <button id="go">Continue</button>
+  <div class="error" id="error" role="alert"></div>
+</form>
+<script>
+const form = document.getElementById("form"), go = document.getElementById("go"), error = document.getElementById("error");
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  go.disabled = true; error.textContent = "";
+  try {
+    const res = await fetch("/api/access", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: document.getElementById("token").value }),
+    });
+    if (res.ok) return location.reload();
+    error.textContent = (await res.json().catch(() => ({}))).error ?? `Refused (${res.status}).`;
+  } catch (err) {
+    error.textContent = `Couldn't reach the simulator: ${err.message}`;
+  } finally {
+    go.disabled = false;
+  }
+});
+</script>
+</body>
+</html>
